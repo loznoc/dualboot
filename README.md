@@ -231,6 +231,30 @@ that nothing else used, so no app slot had to move and nothing needs reinstallin
 
 ---
 
+## Checking what you downloaded
+
+Every push builds the firmware on a clean GitHub runner, and each run's summary lists the
+SHA-256 of all four images along with the commit they came from. To check a file you
+downloaded, hash it and compare:
+
+```bash
+sha256sum launcher.bin
+```
+
+Each run also carries a signed provenance attestation naming the commit and the workflow
+that produced it:
+
+```bash
+gh attestation verify launcher.bin --repo loznoc/dualboot
+```
+
+**What this does not claim.** The images are not bit-for-bit reproducible and cannot be:
+every ESP-IDF application embeds an `esp_app_desc_t` holding the build date, the build time
+and a hash of the ELF, and the image's trailing SHA-256 covers all of it. Two builds of the
+same commit differ by a few dozen bytes. What is reproducible is the partition table —
+`partitions.bin` comes out byte-identical wherever it is built, which is the part that
+decides where everything lives.
+
 ## Building from source
 
 Requires [PlatformIO](https://platformio.org/). The project pins the
