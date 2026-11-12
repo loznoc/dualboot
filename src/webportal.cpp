@@ -573,6 +573,13 @@ static void handleBoot() {
         server.send(409, "text/plain", "slot is empty");
         return;
     }
+    // The same gate the menu applies. Booting from a phone must not be the way round the
+    // check that stops a damaged image from starting.
+    String err;
+    if (appSlotHasChecksum(slot.part) && !appSlotHealthy(slot.part, &err)) {
+        server.send(409, "text/plain", "slot is damaged: " + err);
+        return;
+    }
     server.send(200, "text/plain", "booting " + appSlotDisplay(slot));
     delay(120); // let the reply leave before the radio goes down with everything else
     uiMessage(String("Starting ") + slot.name, COL_OK);

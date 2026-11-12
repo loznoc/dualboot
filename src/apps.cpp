@@ -81,9 +81,43 @@ String appSlotDisplay(const AppSlot &s) {
     return String("App ") + (s.index + 1);
 }
 
+// Wipe the front of a slot so nothing is left that could pass for an installed app.
+//
+// esp_ota_begin() erases the slot and the image header goes down first, so an install that
+// dies part-way leaves a partition whose first byte is still 0xE9. Clearing one erase block
+// is enough: the header, the first segment header and the app descriptor all live inside it,
+// and without them nothing downstream mistakes the remains for firmware.
+static void invalidateSlot(const esp_partition_t *p) {
+    if (!p) return;
+    const uint32_t block = p->erase_size ? p->erase_size : 4096;
+    if (block <= p->size) esp_partition_erase_range(p, 0, block);
+}
+
+// Is there a real application in this slot?
+//
+// The old test read one byte and compared it to 0xE9, which a half-written image, an image
+// built for a different chip, or any file that happens to start with that byte all passed.
+// Three cheap reads instead:
+//
+//   * the image header has to be ours — right magic, right chip, a sane segment count;
+//   * the app descriptor has to be there, which means the first 288 bytes are a genuine
+//     image and not a fragment. Bruce, the Flipper port and this launcher all carry one,
+//     as does anything else built with ESP-IDF or Arduino.
+//
+// This stays cheap enough for the menu to call on every pass. Whether the image is complete
+// is a different and far more expensive question - appSlotHealthy() answers that, and the
+// launcher asks it before handing control over.
 static bool slotHasImage(const esp_partition_t *p) {
-    uint8_t magic = 0;
-    return esp_partition_read(p, 0, &magic, 1) == ESP_OK && magic == ESP_IMAGE_HEADER_MAGIC;
+    if (!p) return false;
+
+    esp_image_header_t hdr;
+    if (esp_partition_read(p, 0, &hdr, sizeof(hdr)) != ESP_OK) return false;
+    if (hdr.magic != ESP_IMAGE_HEADER_MAGIC) return false;
+    if (hdr.chip_id != ESP_CHIP_ID_ESP32S3) return false;
+    if (hdr.segment_count == 0 || hdr.segment_count > 16) return false;
+
+    esp_app_desc_t desc;
+    return esp_ota_get_partition_description(p, &desc) == ESP_OK;
 }
 
 std::vector<AppSlot> appAllSlots() {
@@ -129,9 +163,11 @@ bool appBoot(const esp_partition_t *part) {
 
 bool appDelete(const esp_partition_t *part) {
     if (!part) return false;
-    if (esp_partition_erase_range(part, 0, part->size) != ESP_OK) return false;
+    // Erase the header before the rest: a 4.5 MB erase takes seconds, and if the device
+    // loses power in the middle of it the slot must already have stopped looking bootable.
+    invalidateSlot(part);
     appClearName(part->label);
-    return true;
+    return esp_partition_erase_range(part, 0, part->size) == ESP_OK;
 }
 
 // ---- firmware image sniffing ------------------------------------------------------------------
@@ -180,18 +216,23 @@ bool appInstallFromSd(const char *path, const esp_partition_t *slot, const Strin
 
     // 0x10000 first: a full flash image ALSO has a valid image at 0 (its bootloader), and
     // installing that instead of the app would produce a slot that never boots.
+    // 0x10000 first, because a full flash image also has a valid bootloader image sitting at
+    // 0 and we want the app, not the bootloader. A candidate built for this chip always wins
+    // over one that merely parses, so a file that happens to look like an image at the wrong
+    // offset cannot shadow the real app behind it.
     const size_t candidates[] = {0x10000, 0, 0x20000};
     size_t appOff = 0, appSize = 0;
     uint16_t chip = 0;
     for (size_t c : candidates) {
         uint16_t ch = 0;
         const size_t len = espImageLen(f, c, total, ch);
-        if (len) {
+        if (!len) continue;
+        if (!appSize || (chip != kChipEsp32S3 && ch == kChipEsp32S3)) {
             appOff = c;
             appSize = len;
             chip = ch;
-            break;
         }
+        if (chip == kChipEsp32S3) break;
     }
     if (!appSize) {
         f.close();
@@ -215,9 +256,13 @@ bool appInstallFromSd(const char *path, const esp_partition_t *slot, const Strin
         return fail("Cannot read file");
     }
 
+    // From here on the slot's old contents are gone, so every exit below has to leave it
+    // either holding the new image or holding nothing at all.
     esp_ota_handle_t h;
     if (esp_ota_begin(slot, appSize, &h) != ESP_OK) { // erases the slot, then streams in
         f.close();
+        appClearName(slot->label);
+        invalidateSlot(slot);
         return fail("Cannot erase slot");
     }
 
@@ -249,10 +294,12 @@ bool appInstallFromSd(const char *path, const esp_partition_t *slot, const Strin
     if (!ok) {
         esp_ota_abort(h);
         appClearName(slot->label);
+        invalidateSlot(slot); // otherwise the header we already wrote still reads as an app
         return fail("Read/write error");
     }
     if (esp_ota_end(h) != ESP_OK) { // image failed validation; the slot is unusable
         appClearName(slot->label);
+        invalidateSlot(slot);
         return fail("Image rejected (corrupt?)");
     }
     appSetName(slot->label, name);

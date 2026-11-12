@@ -79,8 +79,20 @@ def main():
     wf = []
     for off, f in parts:
         wf += [off, f]
+
+    # esptool renamed its subcommands between v4 and v5 ("write_flash" -> "write-flash",
+    # "hard_reset" -> "hard-reset"). Which one is installed depends on the PlatformIO
+    # packages of the day, so ask rather than assume.
+    v5 = True
+    try:
+        out = subprocess.run(ESPTOOL + ["version"], capture_output=True, text=True, timeout=30)
+        v5 = not (out.stdout + out.stderr).strip().lstrip("esptool.py v").startswith("4.")
+    except Exception:
+        pass
+    write, reset = ("write-flash", "hard-reset") if v5 else ("write_flash", "hard_reset")
+
     r = subprocess.run(ESPTOOL + ["--chip", "esp32s3", "--port", jtag, "--baud", "921600",
-                                  "--after", "hard-reset", "write-flash"] + wf, env=env)
+                                  "--after", reset, write] + wf, env=env)
     sys.exit(r.returncode)
 
 
