@@ -5,6 +5,7 @@
 #include "input.h"
 #include "sdcard.h"
 #include "settings.h"     // THEMES_DIR
+#include "usbdrive.h"     // usbDriveActive
 #include "webpage_data.h" // kWebPageGz - see tools/make_webpage.py
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -403,6 +404,9 @@ bool webPortalRunning() { return s_running; }
 // Called from the UI's idle hooks. Kept trivial so it can sit in every menu loop.
 void webPortalPoll() {
     if (!s_running) return;
+    // USB drive mode hands the card to the PC. Serving an upload now would write to a
+    // filesystem the host thinks is its own, so the portal waits it out.
+    if (usbDriveActive()) return;
     server.handleClient();
     // Flag a repaint as soon as a client appears or goes quiet, so the screen does not claim
     // "in use" for another two seconds after the phone is gone.

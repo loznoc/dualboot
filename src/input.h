@@ -11,3 +11,9 @@ void inputDrain();      // forget pending turns/presses (call before a new scree
 // Queue a synthetic event, as if the wheel or a button had been used. The web remote uses this;
 // inputPoll() hands queued events out before it looks at the hardware.
 void inputInject(InputEvent e);
+
+// Work to run every time someone waits for input — servicing the web server and the serial
+// console. It lives here because every screen polls input, but only a couple of them used to
+// remember to poll anything else: open the brightness slider or a colour picker and the phone
+// mirror simply stopped until you came back out. Set once at boot.
+void inputSetIdleHook(void (*fn)());

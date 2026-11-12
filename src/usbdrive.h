@@ -17,6 +17,10 @@ bool usbDriveAvailable();
 // until the user presses BACK, then hide the drive again and re-read the card.
 void usbDriveEnter();
 
+// True while the SD card is handed to the PC. Anything on this side that writes to the card
+// must stand down for the duration.
+bool usbDriveActive();
+
 // Low-level: show/hide the SD to the PC (used by the serial console for testing).
 void usbDrivePresent(bool on);
 

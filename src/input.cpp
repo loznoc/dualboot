@@ -38,7 +38,20 @@ void inputInject(InputEvent e) {
     injHead = next;
 }
 
+static void (*idleHook)() = nullptr;
+static bool inIdle = false;
+
+void inputSetIdleHook(void (*fn)()) { idleHook = fn; }
+
 InputEvent inputPoll() {
+    // Whatever the screen is, waiting for input is also the moment to serve the network. The
+    // guard is because the hook ends up inside the web handlers, and one of those could find
+    // its way back here.
+    if (idleHook && !inIdle) {
+        inIdle = true;
+        idleHook();
+        inIdle = false;
+    }
     if (injTail != injHead) { // remote events first, so they never sit behind idle polling
         const InputEvent e = injected[injTail];
         injTail = (uint8_t)((injTail + 1) % kInjectMax);

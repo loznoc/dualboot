@@ -325,6 +325,7 @@ void setup() {
     displayInit();
     usbSetup(); // USB CDC console + SD-backed MSC (needs the display's SPI bus for the SD)
     inputInit();
+    inputSetIdleHook(uiIdle); // every screen that waits for input now also serves the network
     settingsLoad(); // apply saved accent colour + LED colour
 
     if (bootAnimEnabled()) playBootAnimation();

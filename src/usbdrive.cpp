@@ -62,7 +62,15 @@ void usbSetup() {
 
 bool usbDriveAvailable() { return s_mscReady; }
 
+// While the PC has the card, nothing on this side may touch it. The Wi-Fi portal polls from
+// the same input loop this screen uses, so without a flag to look at it would happily accept
+// an upload and write to a filesystem the host believes it owns.
+static bool s_handedToHost = false;
+
+bool usbDriveActive() { return s_handedToHost; }
+
 void usbDrivePresent(bool on) {
+    s_handedToHost = on;
     if (s_mscReady) msc.mediaPresent(on);
 }
 
@@ -78,7 +86,7 @@ void usbDriveEnter() {
         return;
     }
     uiUsbScreen(0);
-    msc.mediaPresent(true); // the SD now shows up as a drive on the PC
+    usbDrivePresent(true); // the SD now shows up as a drive on the PC
 
     inputDrain();
     const uint32_t t0 = millis();
@@ -89,7 +97,7 @@ void usbDriveEnter() {
         delay(30);
     }
 
-    msc.mediaPresent(false);
+    usbDrivePresent(false);
     delay(400);     // settle: let the host notice the eject + any transfer finish
     sdInvalidate(); // mark stale; re-scans lazily on the next Install (no SD.end on this path)
     inputDrain();
