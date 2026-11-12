@@ -1,0 +1,131 @@
+name: Firmware
+
+# Builds the launcher on a clean runner so the published image has a public trail: which
+# commit it came from, which toolchain built it, and what its checksums are. Both the
+# platform and the custom arduino-libs package are pinned to exact URLs in platformio.ini,
+# so a build here uses the same inputs as a build on anyone's machine.
+#
+# A note on what this does and does not prove. The binaries are NOT bit-for-bit reproducible
+# and cannot be: every ESP-IDF app carries an esp_app_desc_t with the build date, the build
+# time and a hash of the ELF, and the image's trailing SHA-256 covers all of it. So two
+# builds of the same commit differ by a few dozen bytes. What you get instead is provenance
+# — a signed attestation naming the commit, plus checksums you can match against the file
+# you downloaded.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "lib/**"
+      - "boards/**"
+      - "bootloader/**"
+      - "tools/**"
+      - "partitions.csv"
+      - "platformio.ini"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "lib/**"
+      - "boards/**"
+      - "bootloader/**"
+      - "partitions.csv"
+      - "platformio.ini"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the images to a published release
+      id-token: write # sign the provenance attestation
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The toolchain and the custom arduino-libs tarball are a few hundred MB; without this
+      # every run spends several minutes re-downloading them.
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: pio-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build
+        run: pio run -e lilygo-t-embed-cc1101
+
+      - name: Assemble the flashable image
+        run: python tools/build_everything.py
+
+      - name: Collect
+        id: collect
+        run: |
+          set -eu
+          BUILD=.pio/build/lilygo-t-embed-cc1101
+          mkdir -p out
+          # The four files the web flasher and the manual route need, under the names the
+          # site already serves them as.
+          cp firmware/launcher.bin      out/launcher.bin        # whole image, offset 0x0
+          cp bootloader/bootloader.bin  out/bootloader.bin      # 0x0
+          cp "$BUILD/partitions.bin"    out/partitions.bin      # 0x8000
+          cp "$BUILD/firmware.bin"      out/launcher-app.bin    # 0x10000
+
+          cd out
+          sha256sum *.bin | tee SHA256SUMS.txt
+
+          {
+            echo "### Firmware build"
+            echo
+            echo "Commit \`${GITHUB_SHA}\`"
+            echo
+            echo '| file | offset | bytes | sha256 |'
+            echo '|---|---|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          declare -A OFF=( [bootloader.bin]=0x0 [partitions.bin]=0x8000 \
+                           [launcher-app.bin]=0x10000 [launcher.bin]=0x0 )
+          for f in bootloader.bin partitions.bin launcher-app.bin launcher.bin; do
+            printf '| `%s` | `%s` | %s | `%s` |\n' \
+              "$f" "${OFF[$f]}" "$(stat -c%s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)" \
+              >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Check it fits its partition
+        run: |
+          set -eu
+          # The launcher lives in a 0x180000 partition. Overrunning it is caught by the
+          # linker only for the app itself, not for the assembled image, so check here.
+          LIMIT=$((0x180000))
+          SIZE=$(stat -c%s out/launcher-app.bin)
+          echo "launcher app: $SIZE of $LIMIT bytes ($((SIZE * 100 / LIMIT))%)"
+          test "$SIZE" -le "$LIMIT"
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "out/*.bin"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-firmware
+          path: out/*
+          if-no-files-found: error
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" out/* --clobber
